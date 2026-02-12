@@ -1,3 +1,5 @@
-streamlit
-groq
-python-dotenv
+streamlit>=1.35.0
+openai>=1.40.0
+streamlit-audiorecorder>=0.0.6
+pydub>=0.25.1
+
