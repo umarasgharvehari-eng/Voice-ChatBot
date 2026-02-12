@@ -10,7 +10,7 @@ from audiorecorder import audiorecorder  # pip install streamlit-audiorecorder
 # Page config
 # ---------------------------
 st.set_page_config(
-    page_title="FortisVoice • Chat",
+    page_title="Voice ChatBot",
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded",
