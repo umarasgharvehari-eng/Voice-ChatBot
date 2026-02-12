@@ -1,14 +1,13 @@
 import re
 import streamlit as st
 
-# =======================
-# FortisVoice (Polished WhatsApp-style UI)
-# FIXES:
-# 1) Your composer looked tiny because Streamlit components run inside an iframe.
-#    CSS from the main page DOES NOT apply inside that iframe.
-#    -> Solution: put ALL composer CSS inside the component itself (inline <style>).
-# 2) Full page chat: big chat area + proper scroll + composer at bottom (not tiny).
-# =======================
+# =========================
+# FortisVoice — FULL PAGE WhatsApp-style (WORKS on Streamlit Cloud)
+# Key fix:
+# - Normal st.components HTML runs INSIDE an iframe, so it stays "small".
+# - Here we INJECT the WhatsApp bar into the PARENT document (window.parent.document)
+#   so it becomes true full-width, fixed bottom like WhatsApp.
+# =========================
 
 st.set_page_config(
     page_title="FortisVoice • Voice Chatbot",
@@ -17,14 +16,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------- Main-page CSS (chat area polish) ----------
+# ---------- Main CSS (full-page chat) ----------
 st.markdown(
     """
 <style>
-/* Layout + spacing */
-.block-container { padding-top: 1rem; padding-bottom: 1rem; max-width: 1100px; }
+.block-container { padding-top: 1rem; padding-bottom: 6.5rem; max-width: 1100px; }
 
-/* Header */
 .header-card{
   border: 1px solid rgba(255,255,255,0.08);
   background: linear-gradient(135deg, rgba(99,102,241,0.18), rgba(16,185,129,0.10));
@@ -37,21 +34,19 @@ st.markdown(
 
 .small-muted { opacity: 0.75; font-size: 0.92rem; }
 
-/* Chat panel: BIG and scrollable */
+/* BIG chat area */
 .chat-shell{
   border: 1px solid rgba(255,255,255,0.10);
   background: rgba(255,255,255,0.03);
   border-radius: 18px;
-  padding: 10px 10px;
-  height: calc(100vh - 260px); /* fills screen nicely */
+  padding: 12px;
+  height: calc(100vh - 240px);
   min-height: 520px;
   overflow-y: auto;
 }
 
-/* Chat message bubble rounding */
 .stChatMessage { border-radius: 16px; }
 
-/* Hide menu/footer */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 </style>
@@ -59,7 +54,7 @@ footer {visibility: hidden;}
     unsafe_allow_html=True,
 )
 
-# ---------- Language detection (UI stays English; replies match user language) ----------
+# ---------- Language detection (UI English only; replies match user language) ----------
 URDU_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
 
 def detect_lang(text: str) -> str:
@@ -69,9 +64,7 @@ def detect_lang(text: str) -> str:
     if URDU_ARABIC_RE.search(t):
         return "ur"
     tl = t.lower()
-    roman_urdu_markers = [
-        "bhai","mujhe","kya","hain","hai","nahi","kar","kr","chahiye","banao","ban","aoa","salam"
-    ]
+    roman_urdu_markers = ["bhai","mujhe","kya","hain","hai","nahi","kar","kr","chahiye","banao","ban","aoa","salam"]
     score = sum(1 for w in roman_urdu_markers if w in tl)
     return "ur" if score >= 2 else "en"
 
@@ -148,25 +141,24 @@ st.markdown(
     """
 <div class="header-card">
   <p class="header-title">🎙️ FortisVoice</p>
-  <p class="header-sub">WhatsApp-style: full-page chat + text send + voice send at the bottom.</p>
+  <p class="header-sub">Full-page WhatsApp-style chat with text + voice bar fixed at the bottom.</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-# ---------- Receive message via query params (from composer JS) ----------
+# ---------- Handle message from query params ----------
 incoming = st.query_params.get("t", "")
-
 if incoming and incoming != st.session_state.last_incoming:
     st.session_state.last_incoming = incoming
     add_message("user", incoming)
     add_message("assistant", bot_reply(incoming))
 
-# ---------- Full-page Chat Panel (scrollable) ----------
-st.markdown('<div class="chat-shell" id="chatShell">', unsafe_allow_html=True)
+# ---------- Chat area (full height) ----------
+st.markdown('<div class="chat-shell" id="fv_chat_shell">', unsafe_allow_html=True)
 
 if not st.session_state.messages:
-    st.markdown('<div class="small-muted">Send a message using the bar below.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="small-muted">Use the bottom bar to send a text or voice message.</div>', unsafe_allow_html=True)
 
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
@@ -174,12 +166,13 @@ for m in st.session_state.messages:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- Auto-scroll to bottom of chat panel ----------
+# ---------- Auto-scroll to bottom ----------
 st.components.v1.html(
     """
 <script>
 (function(){
-  const el = window.parent.document.getElementById("chatShell");
+  const root = window.parent.document;
+  const el = root.getElementById("fv_chat_shell");
   if (el) el.scrollTop = el.scrollHeight;
 })();
 </script>
@@ -211,104 +204,119 @@ setTimeout(() => {{
             height=0,
         )
 
-# ============================================================
-# Bottom Composer (WhatsApp style) — IMPORTANT:
-# Put CSS INSIDE this component (iframe), otherwise it looks tiny/unstyled.
-# ============================================================
-composer_html = f"""
-<style>
-  html, body {{
-    margin: 0; padding: 0;
-    background: transparent;
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
-  }}
-  .bar {{
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 10px;
-    border-radius: 16px;
-    border: 1px solid rgba(255,255,255,0.14);
-    background: rgba(20,20,24,0.92);
-    box-sizing: border-box;
-  }}
-  .inp {{
-    flex: 1;
-    display: flex;
-    align-items: center;
-    padding: 10px 14px;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.14);
-  }}
-  .inp input {{
-    width: 100%;
-    border: none;
-    outline: none;
-    background: transparent;
-    color: white;
-    font-size: 15px;
-  }}
-  .btn {{
-    width: 48px;
-    height: 48px;
-    border-radius: 999px;
-    border: none;
-    color: white;
-    font-size: 18px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }}
-  .send {{ background: #22c55e; }}
-  .send:hover {{ background: #1fb255; }}
-  .mic {{ background: #3b82f6; }}
-  .mic:hover {{ background: #3273d9; }}
-  .stop {{ background: #ef4444; }}
-  .stop:hover {{ background: #d93b3b; }}
-  .btn:disabled {{ opacity: 0.6; cursor: not-allowed; }}
-
-  .status {{
-    margin-top: 6px;
-    font-size: 13px;
-    opacity: 0.75;
-    color: #111;
-  }}
-  /* If dark theme, status should still be visible */
-  @media (prefers-color-scheme: dark) {{
-    .status {{ color: rgba(255,255,255,0.8); }}
-  }}
-</style>
-
-<div class="bar">
-  <div class="inp">
-    <input id="msg" type="text" placeholder="Message..." autocomplete="off"/>
-  </div>
-  <button id="send" class="btn send" title="Send">➤</button>
-  <button id="mic" class="btn mic" title="Voice">🎤</button>
-  <button id="stop" class="btn stop" title="Stop" disabled>⏹</button>
-</div>
-<div id="status" class="status"></div>
-
+# =========================================================
+# WhatsApp bar injected into PARENT page (TRUE full-width)
+# =========================================================
+inject_bar = f"""
 <script>
-(function(){{
-  const base = window.location.origin + window.location.pathname;
+(function() {{
+  const root = window.parent.document;
 
-  const msg = document.getElementById("msg");
-  const send = document.getElementById("send");
-  const mic  = document.getElementById("mic");
-  const stop = document.getElementById("stop");
-  const status = document.getElementById("status");
+  // Prevent duplicates on reruns
+  if (root.getElementById("fv_whatsapp_bar")) return;
 
-  function redirectWithText(text){{
+  // Styles (must be injected into parent)
+  const style = root.createElement("style");
+  style.innerHTML = `
+    #fv_whatsapp_bar {{
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 999999;
+      padding: 12px 12px 14px 12px;
+      background: rgba(12,12,14,0.94);
+      backdrop-filter: blur(14px);
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }}
+    #fv_whatsapp_bar .inner {{
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }}
+    #fv_whatsapp_bar .inp {{
+      flex: 1;
+      display:flex;
+      align-items:center;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.14);
+    }}
+    #fv_whatsapp_bar input {{
+      width: 100%;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: white;
+      font-size: 15px;
+    }}
+    #fv_whatsapp_bar .btn {{
+      width: 48px; height: 48px;
+      border-radius: 999px;
+      border: none;
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }}
+    #fv_whatsapp_bar .send {{ background:#22c55e; }}
+    #fv_whatsapp_bar .mic  {{ background:#3b82f6; }}
+    #fv_whatsapp_bar .stop {{ background:#ef4444; }}
+    #fv_whatsapp_bar .btn:disabled {{ opacity: 0.6; cursor: not-allowed; }}
+    #fv_whatsapp_bar .status {{
+      max-width: 220px;
+      font-size: 13px;
+      opacity: 0.8;
+      color: white;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+  `;
+  root.head.appendChild(style);
+
+  // Bar HTML
+  const bar = root.createElement("div");
+  bar.id = "fv_whatsapp_bar";
+  bar.innerHTML = `
+    <div class="inner">
+      <div class="inp"><input id="fv_msg" placeholder="Message..." autocomplete="off"/></div>
+      <button id="fv_send" class="btn send" title="Send">➤</button>
+      <button id="fv_mic"  class="btn mic"  title="Voice">🎤</button>
+      <button id="fv_stop" class="btn stop" title="Stop" disabled>⏹</button>
+      <div id="fv_status" class="status"></div>
+    </div>
+  `;
+  root.body.appendChild(bar);
+
+  const msg = root.getElementById("fv_msg");
+  const send = root.getElementById("fv_send");
+  const mic  = root.getElementById("fv_mic");
+  const stop = root.getElementById("fv_stop");
+  const status = root.getElementById("fv_status");
+
+  // Restore draft
+  try {{
+    const d = root.defaultView.sessionStorage.getItem("fv_draft") || "";
+    if (d) msg.value = d;
+  }} catch(e) {{}}
+
+  msg.addEventListener("input", () => {{
+    try {{ root.defaultView.sessionStorage.setItem("fv_draft", msg.value || ""); }} catch(e) {{}}
+  }});
+
+  function redirectWithText(text) {{
     const t = (text || "").trim();
-    if(!t) return;
-    window.location.href = base + "?t=" + encodeURIComponent(t) + "&_ts=" + Date.now();
+    if (!t) return;
+    try {{ root.defaultView.sessionStorage.setItem("fv_draft", ""); }} catch(e) {{}}
+    const base = root.defaultView.location.origin + root.defaultView.location.pathname;
+    root.defaultView.location.href = base + "?t=" + encodeURIComponent(t) + "&_ts=" + Date.now();
   }}
 
-  // Send text
+  // Text send
   send.onclick = () => redirectWithText(msg.value);
   msg.addEventListener("keydown", (e) => {{
     if (e.key === "Enter") {{
@@ -318,9 +326,9 @@ composer_html = f"""
   }});
 
   // Voice recognition
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const SpeechRecognition = root.defaultView.SpeechRecognition || root.defaultView.webkitSpeechRecognition;
   if (!SpeechRecognition) {{
-    status.textContent = "Voice input not supported in this browser. Use Chrome.";
+    status.textContent = "Voice not supported (use Chrome).";
     mic.disabled = true;
     return;
   }}
@@ -332,7 +340,7 @@ composer_html = f"""
 
   let finalText = "";
 
-  function setListening(on){{
+  function setListening(on) {{
     mic.disabled = on;
     stop.disabled = !on;
     send.disabled = on;
@@ -382,7 +390,4 @@ composer_html = f"""
 }})();
 </script>
 """
-
-# This is displayed under the chat, like WhatsApp.
-# Height MUST be > 0 on Streamlit Cloud.
-st.components.v1.html(composer_html, height=120)
+st.components.v1.html(inject_bar, height=0)
