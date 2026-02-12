@@ -1,15 +1,13 @@
-import os
-import base64
-import json
-import re
+import io
 from datetime import datetime
 
 import streamlit as st
-import streamlit.components.v1 as components
-from groq import Groq
+from openai import OpenAI
+from audiorecorder import audiorecorder  # pip install streamlit-audiorecorder
+
 
 # ---------------------------
-# Config
+# Page config
 # ---------------------------
 st.set_page_config(
     page_title="FortisVoice • Chat",
@@ -18,116 +16,99 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-URDU_RANGE_RE = re.compile(r"[\u0600-\u06FF]")
+# ---------------------------
+# Groq clients (OpenAI-compatible)
+# ---------------------------
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"  # OpenAI-compatible base URL :contentReference[oaicite:3]{index=3}
 
+def get_groq_client():
+    api_key = st.secrets.get("GROQ_API_KEY", "")
+    if not api_key:
+        return None
+    return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
+
+# ---------------------------
+# Helpers
+# ---------------------------
 def now_time():
     return datetime.now().strftime("%H:%M")
 
-def detect_language(text: str) -> str:
-    if not text:
-        return "en"
-    return "ur" if URDU_RANGE_RE.search(text) else "en"
-
-def get_groq_client():
-    key = st.secrets.get("GROQ_API_KEY", None) if hasattr(st, "secrets") else None
-    key = key or os.getenv("GROQ_API_KEY")
-    if not key:
-        return None
-    return Groq(api_key=key)
-
-def groq_chat_reply(user_text: str, history):
-    """
-    history: list of {role: 'user'/'assistant', content: str}
-    """
-    client = get_groq_client()
-    if client is None:
-        return "⚠️ GROQ_API_KEY missing. Add it in Streamlit Secrets."
-
-    # System prompt: bilingual + helpful
-    system = (
-        "You are FortisVoice, a helpful bilingual assistant (Urdu + English). "
-        "Answer naturally, concise but helpful. If user uses Urdu, reply in Urdu. "
-        "If user uses English, reply in English."
+def sanitize_html(text: str) -> str:
+    # Minimal escaping for safe bubble render
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br/>")
     )
 
-    messages = [{"role": "system", "content": system}]
+def stt_transcribe_wav(groq: OpenAI, wav_bytes: bytes, lang_hint: str = "") -> str:
+    """
+    Groq Speech-to-Text using OpenAI-compatible endpoint.
+    Model examples: whisper-large-v3 / whisper-large-v3-turbo :contentReference[oaicite:4]{index=4}
+    """
+    # OpenAI python expects a file-like or tuple: (filename, bytes, mimetype)
+    # Some versions accept just bytes; tuple is safest.
+    transcript = groq.audio.transcriptions.create(
+        model="whisper-large-v3-turbo",
+        file=("voice.wav", wav_bytes, "audio/wav"),
+        # language is optional; keep empty if you want auto-detect
+        language=lang_hint if lang_hint else None,
+    )
+    # Depending on SDK version, transcript may be str or object with .text
+    return getattr(transcript, "text", transcript)
 
-    # keep small memory window
-    for m in history[-12:]:
-        messages.append({"role": m["role"], "content": m["content"]})
-
-    messages.append({"role": "user", "content": user_text})
-
-    # Pick a Groq model
-    # Good default: llama-3.1-8b-instant or llama-3.1-70b-versatile (slower)
-    resp = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+def chat_complete(groq: OpenAI, messages: list[dict]) -> str:
+    """
+    Groq chat completion via OpenAI-compatible Chat Completions endpoint. :contentReference[oaicite:5]{index=5}
+    """
+    resp = groq.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         messages=messages,
-        temperature=0.6,
-        max_tokens=500,
+        temperature=0.3,
     )
-    return resp.choices[0].message.content.strip()
-
-def js_speak(text: str, lang: str):
-    if not text:
-        return
-    safe = (
-        text.replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("${", "\\${")
-        .replace("\n", "\\n")
-    )
-    components.html(
-        f"""
-<script>
-try {{
-  const u = new SpeechSynthesisUtterance(`{safe}`);
-  u.lang = "{lang}";
-  window.speechSynthesis.cancel();
-  window.speechSynthesis.speak(u);
-}} catch(e) {{
-  console.log("TTS error:", e);
-}}
-</script>
-""",
-        height=0,
-    )
+    return resp.choices[0].message.content
 
 # ---------------------------
-# State
+# Session state
 # ---------------------------
 if "messages" not in st.session_state:
-    # each: {role:'user'/'assistant', content:str, time:str, audio_b64:str|None, mime:str|None}
+    # message: {role: "user"|"assistant", type:"text"|"audio", content, time}
     st.session_state.messages = []
 
-if "draft" not in st.session_state:
-    st.session_state.draft = ""
-
-if "last_assistant" not in st.session_state:
-    st.session_state.last_assistant = ""
+if "last_spoken" not in st.session_state:
+    st.session_state.last_spoken = ""
 
 # ---------------------------
 # Sidebar
 # ---------------------------
 st.sidebar.title("Settings")
 
-tts_lang = st.sidebar.selectbox(
-    "TTS language",
-    ["en-US", "en-GB", "ur-PK", "hi-IN"],
+auto_speak = st.sidebar.toggle("Auto-speak assistant reply", value=True)
+
+st.sidebar.markdown("### Groq API")
+if st.secrets.get("GROQ_API_KEY", ""):
+    st.sidebar.success("GROQ_API_KEY found ✅")
+else:
+    st.sidebar.warning("GROQ_API_KEY missing. Add it in Streamlit Secrets.")
+
+voice_lang_hint = st.sidebar.selectbox(
+    "Voice language hint (optional)",
+    options=["", "en", "ur", "hi"],
     index=0,
+    help="STT usually auto-detects; this only hints the transcription.",
 )
 
-if st.sidebar.button("🔊 Speak last reply", use_container_width=True):
-    js_speak(st.session_state.last_assistant, tts_lang)
-
-if st.sidebar.button("🧹 Clear chat", use_container_width=True):
+if st.sidebar.button("Clear chat", use_container_width=True):
     st.session_state.messages = []
-    st.session_state.draft = ""
-    st.session_state.last_assistant = ""
+    st.session_state.last_spoken = ""
     st.rerun()
 
-st.sidebar.caption("WhatsApp-style voice uses browser recorder.")
-st.sidebar.caption("AI replies via Groq API (needs GROQ_API_KEY).")
+st.sidebar.caption(
+    "Voice recording uses a Streamlit component (not browser postMessage hacks). "
+    "STT + Chat uses Groq."
+)
 
 # ---------------------------
 # CSS (WhatsApp-ish)
@@ -140,18 +121,43 @@ html, body, [data-testid="stAppViewContainer"] { height: 100%; }
 [data-testid="stHeader"] { background: rgba(0,0,0,0); }
 .block-container {
   padding-top: 0.75rem !important;
-  padding-bottom: 7rem !important;
+  padding-bottom: 6.0rem !important;
   max-width: 1200px;
 }
+.chat-shell {
+  width: 100%;
+  height: calc(100vh - 12rem);
+  background: #efeae2;
+  border-radius: 18px;
+  padding: 12px 12px 16px 12px;
+  overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+  border: 1px solid rgba(0,0,0,0.05);
+}
+.msg-row { display:flex; margin:10px 0; }
+.msg-row.user { justify-content:flex-end; }
+.msg-row.bot { justify-content:flex-start; }
+.bubble {
+  max-width: 72%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  line-height: 1.35;
+  font-size: 0.98rem;
+  position: relative;
+  word-wrap: break-word;
+}
+.bubble.user { background:#d9fdd3; border-top-right-radius: 6px; }
+.bubble.bot { background:#ffffff; border-top-left-radius: 6px; }
+.time { display:block; margin-top:6px; font-size:0.72rem; opacity:0.55; text-align:right; }
 .composer {
-  position: fixed; left: 0; right: 0; bottom: 0;
+  position: fixed; left:0; right:0; bottom:0;
   z-index: 999;
-  background: rgba(239,234,226,0.95);
+  background: rgba(239,234,226,0.92);
   backdrop-filter: blur(8px);
   border-top: 1px solid rgba(0,0,0,0.08);
   padding: 10px 0;
 }
-.composer-inner { max-width: 1200px; margin: 0 auto; padding: 0 1rem; }
+.composer-inner { max-width:1200px; margin:0 auto; padding:0 1rem; }
 div[data-testid="stTextInput"] input {
   border-radius: 999px !important;
   padding: 0.70rem 1rem !important;
@@ -162,19 +168,11 @@ button[kind="primary"], button[kind="secondary"] {
   border-radius: 999px !important;
   height: 44px !important;
 }
-.voicebar {
-  display:flex; gap:10px; align-items:center; justify-content:space-between;
-  background:#fff; border:1px solid rgba(0,0,0,0.08);
-  border-radius:999px; padding:10px 12px; margin-top:8px;
+@media (max-width: 768px) {
+  .block-container { max-width: 100% !important; }
+  .bubble { max-width: 86%; }
+  .chat-shell { height: calc(100vh - 14rem); border-radius: 14px; }
 }
-.vbtn {
-  border:none; border-radius:999px; padding:10px 14px;
-  cursor:pointer; font-weight:600;
-}
-.vbtn.rec { background:#ff3b30; color:white; }
-.vbtn.stop { background:#111; color:white; }
-.vbtn.send { background:#25D366; color:white; }
-.vhint { font-size:0.85rem; opacity:0.7; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -195,222 +193,205 @@ st.markdown(
       <div style="font-size:0.85rem;opacity:0.65;">WhatsApp-style voice + Groq AI</div>
     </div>
   </div>
-  <div style="font-size:0.85rem;opacity:0.6;">Streamlit • Browser recorder</div>
+  <div style="font-size:0.85rem;opacity:0.6;">Recorder • STT • Chat • TTS</div>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
 # ---------------------------
-# Render chat
+# Render chat (HTML bubbles; audio uses st.audio below bubble)
 # ---------------------------
-for i, m in enumerate(st.session_state.messages):
-    with st.chat_message(m["role"]):
-        if m.get("content"):
-            st.markdown(m["content"])
+st.markdown('<div class="chat-shell" id="chatShell">', unsafe_allow_html=True)
 
-        # Voice bubble
-        if m.get("audio_b64"):
-            audio_bytes = base64.b64decode(m["audio_b64"])
-            st.audio(audio_bytes, format=m.get("mime") or "audio/webm")
+for m in st.session_state.messages:
+    role_cls = "user" if m["role"] == "user" else "bot"
+    bubble_cls = "user" if m["role"] == "user" else "bot"
 
-        st.caption(m.get("time", ""))
-
-        if m["role"] == "assistant" and m.get("content"):
-            if st.button("🔊 Speak", key=f"speak_{i}"):
-                js_speak(m["content"], tts_lang)
-
-# ---------------------------
-# WhatsApp-style voice recorder component
-# returns JSON:
-#  {status:"idle"/"recording"/"ready", audio_b64:"...", mime:"audio/webm"}
-# ---------------------------
-voice_component_html = """
-<div class="voicebar">
-  <div class="vhint" id="hint">🎤 Press Record to start</div>
-  <div style="display:flex;gap:8px;">
-    <button class="vbtn rec" id="recBtn">Record</button>
-    <button class="vbtn stop" id="stopBtn" disabled>Stop</button>
-    <button class="vbtn send" id="sendBtn" disabled>Send</button>
+    if m.get("type") == "audio":
+        # Bubble header + audio player
+        st.markdown(
+            f"""
+<div class="msg-row {role_cls}">
+  <div class="bubble {bubble_cls}">
+    <b>🎤 Voice note</b>
+    <span class="time">{m["time"]}</span>
   </div>
 </div>
+""",
+            unsafe_allow_html=True,
+        )
+        st.audio(m["content"], format="audio/wav")  # content is bytes
+    else:
+        st.markdown(
+            f"""
+<div class="msg-row {role_cls}">
+  <div class="bubble {bubble_cls}">
+    {sanitize_html(m["content"])}
+    <span class="time">{m["time"]}</span>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
+st.markdown(
+    """
 <script>
-let mediaRecorder;
-let chunks = [];
-let lastBlob = null;
-let lastMime = "audio/webm";
-
-const hint = document.getElementById("hint");
-const recBtn = document.getElementById("recBtn");
-const stopBtn = document.getElementById("stopBtn");
-const sendBtn = document.getElementById("sendBtn");
-
-function toBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const dataUrl = reader.result;
-      // data:audio/webm;base64,XXXX
-      const b64 = dataUrl.split(",")[1];
-      resolve(b64);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function startRec() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const options = {};
-    // try a preferred mime
-    if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-      options.mimeType = "audio/webm;codecs=opus";
-      lastMime = "audio/webm";
-    } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-      options.mimeType = "audio/webm";
-      lastMime = "audio/webm";
-    } else {
-      lastMime = "audio/webm";
-    }
-
-    mediaRecorder = new MediaRecorder(stream, options);
-    chunks = [];
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-
-    mediaRecorder.onstop = async () => {
-      lastBlob = new Blob(chunks, { type: options.mimeType || "audio/webm" });
-      hint.textContent = "✅ Recorded. Press Send.";
-      sendBtn.disabled = false;
-      // stop mic tracks
-      stream.getTracks().forEach(t => t.stop());
-    };
-
-    mediaRecorder.start();
-    hint.textContent = "🔴 Recording...";
-    recBtn.disabled = true;
-    stopBtn.disabled = false;
-    sendBtn.disabled = true;
-  } catch (e) {
-    console.log(e);
-    alert("Microphone permission denied or not available.");
-  }
-}
-
-function stopRec() {
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  }
-  stopBtn.disabled = true;
-  recBtn.disabled = false;
-}
-
-async function sendRec() {
-  if (!lastBlob) return;
-  const b64 = await toBase64(lastBlob);
-  const payload = { status: "ready", audio_b64: b64, mime: lastMime };
-
-  // Streamlit component value
-  window.parent.postMessage(
-    { isStreamlitMessage: true, type: "streamlit:setComponentValue", value: payload },
-    "*"
-  );
-
-  // reset UI
-  lastBlob = null;
-  sendBtn.disabled = true;
-  hint.textContent = "🎤 Press Record to start";
-}
-
-recBtn.addEventListener("click", startRec);
-stopBtn.addEventListener("click", stopRec);
-sendBtn.addEventListener("click", sendRec);
+  const el = document.getElementById("chatShell");
+  if (el) { el.scrollTop = el.scrollHeight; }
 </script>
-"""
+""",
+    unsafe_allow_html=True,
+)
 
-voice_value = components.html(voice_component_html, height=70)
-
-# If component returns a dict-like payload, Streamlit may deserialize as string; handle both.
-payload = None
-if isinstance(voice_value, dict):
-    payload = voice_value
-elif isinstance(voice_value, str) and voice_value.strip():
-    # sometimes comes as JSON-like; try parse
-    try:
-        payload = json.loads(voice_value)
-    except Exception:
-        payload = None
-
-# If voice payload received
-if isinstance(payload, dict) and payload.get("status") == "ready" and payload.get("audio_b64"):
-    st.session_state.messages.append({
-        "role": "user",
-        "content": "🎙️ Voice message",
-        "time": now_time(),
-        "audio_b64": payload["audio_b64"],
-        "mime": payload.get("mime", "audio/webm"),
-    })
-
-    # Assistant response for voice message (no transcription yet)
-    # If you want STT, we can add Whisper/Groq later.
-    reply = "Voice message received ✅\n\nAap chahein to main isko transcribe bhi kar sakta hun (API se)."
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": reply,
-        "time": now_time(),
-        "audio_b64": None,
-        "mime": None,
-    })
-    st.session_state.last_assistant = reply
-    st.rerun()
+st.markdown("</div>", unsafe_allow_html=True)
 
 # ---------------------------
-# Composer (text)
+# Composer (bottom fixed)
 # ---------------------------
 st.markdown('<div class="composer"><div class="composer-inner">', unsafe_allow_html=True)
 
-c1, c2 = st.columns([8, 1])
+c1, c2, c3, c4 = st.columns([7, 1.2, 1.2, 1.2])
 
 with c1:
-    st.session_state.draft = st.text_input(
+    user_text = st.text_input(
         "Message",
-        value=st.session_state.draft,
+        value="",
         label_visibility="collapsed",
         placeholder="Type a message…",
+        key="text_box",
     )
 
 with c2:
-    if st.button("➤", type="primary", use_container_width=True):
-        text = (st.session_state.draft or "").strip()
-        if text:
-            st.session_state.messages.append({
-                "role": "user",
-                "content": text,
-                "time": now_time(),
-                "audio_b64": None,
-                "mime": None,
-            })
+    # WhatsApp-like voice note record
+    # Tip from component README: if prompts are empty, it can show visualizer :contentReference[oaicite:6]{index=6}
+    audio_seg = audiorecorder(
+        start_prompt="🎙️ Record",
+        stop_prompt="⏹ Stop",
+        pause_prompt="",
+        show_visualizer=True,
+        key="voice_note",
+    )
 
-            # build chat history for Groq
-            history = []
-            for m in st.session_state.messages:
-                if m["role"] in ("user", "assistant") and m.get("content"):
-                    history.append({"role": m["role"], "content": m["content"]})
+with c3:
+    send_text = st.button("➤ Send", type="primary", use_container_width=True)
 
-            reply = groq_chat_reply(text, history[:-1])
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": reply,
-                "time": now_time(),
-                "audio_b64": None,
-                "mime": None,
-            })
-            st.session_state.last_assistant = reply
-            st.session_state.draft = ""
-            st.rerun()
+with c4:
+    speak_last = st.button("🔊 Speak", use_container_width=True)
 
 st.markdown("</div></div>", unsafe_allow_html=True)
+
+# ---------------------------
+# Actions
+# ---------------------------
+groq = get_groq_client()
+
+def append_user_text(text: str):
+    st.session_state.messages.append(
+        {"role": "user", "type": "text", "content": text, "time": now_time()}
+    )
+
+def append_user_audio(wav_bytes: bytes):
+    st.session_state.messages.append(
+        {"role": "user", "type": "audio", "content": wav_bytes, "time": now_time()}
+    )
+
+def append_assistant(text: str):
+    st.session_state.messages.append(
+        {"role": "assistant", "type": "text", "content": text, "time": now_time()}
+    )
+    st.session_state.last_spoken = text
+
+def build_chat_messages_for_api():
+    # Keep history; include a system prompt
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "You are FortisVoice, a helpful assistant. "
+                "Reply naturally. If the user writes Urdu/Roman Urdu, reply in Urdu/Roman Urdu. "
+                "Keep answers concise unless user asks for details."
+            ),
+        }
+    ]
+    for m in st.session_state.messages:
+        if m["role"] == "user" and m.get("type") == "text":
+            msgs.append({"role": "user", "content": m["content"]})
+        elif m["role"] == "assistant" and m.get("type") == "text":
+            msgs.append({"role": "assistant", "content": m["content"]})
+        # (Audio messages are converted to text after STT; we don't send raw audio to chat model.)
+    return msgs
+
+# Send text
+if send_text and user_text.strip():
+    if not groq:
+        append_user_text(user_text.strip())
+        append_assistant("⚠️ GROQ_API_KEY missing. Please add it in Streamlit Secrets.")
+        st.rerun()
+
+    append_user_text(user_text.strip())
+    msgs = build_chat_messages_for_api()
+    reply = chat_complete(groq, msgs)
+    append_assistant(reply)
+    st.rerun()
+
+# Handle voice note (when audio recorded)
+# audiorecorder returns a pydub AudioSegment. len(audio_seg) > 0 indicates data :contentReference[oaicite:7]{index=7}
+if audio_seg is not None and len(audio_seg) > 0:
+    if not groq:
+        # still show the audio bubble, but cannot transcribe/chat
+        wav_bytes = audio_seg.export(format="wav").read()
+        append_user_audio(wav_bytes)
+        append_assistant("⚠️ GROQ_API_KEY missing. Add it in Streamlit Secrets to transcribe & reply.")
+        st.rerun()
+
+    wav_bytes = audio_seg.export(format="wav").read()
+    append_user_audio(wav_bytes)
+
+    with st.spinner("Transcribing voice note…"):
+        transcript = stt_transcribe_wav(groq, wav_bytes, lang_hint=voice_lang_hint)
+
+    # Show transcript as user text (so chat model gets it)
+    append_user_text(transcript)
+
+    with st.spinner("Thinking…"):
+        msgs = build_chat_messages_for_api()
+        reply = chat_complete(groq, msgs)
+
+    append_assistant(reply)
+    st.rerun()
+
+# Speak button: speak last assistant message (client-side TTS)
+if speak_last:
+    # find last assistant text
+    last = ""
+    for m in reversed(st.session_state.messages):
+        if m["role"] == "assistant" and m.get("type") == "text":
+            last = m["content"]
+            break
+    st.session_state.last_spoken = last
+
+# Auto-speak assistant reply (browser TTS)
+if auto_speak and st.session_state.last_spoken:
+    safe_text = (
+        st.session_state.last_spoken
+        .replace("\\", "\\\\")
+        .replace("`", "\\`")
+        .replace("\n", " ")
+    )
+    st.components.v1.html(
+        f"""
+<script>
+  try {{
+    const msg = new SpeechSynthesisUtterance(`{safe_text}`);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(msg);
+  }} catch (e) {{
+    console.log(e);
+  }}
+</script>
+""",
+        height=0,
+    )
+    st.session_state.last_spoken = ""
