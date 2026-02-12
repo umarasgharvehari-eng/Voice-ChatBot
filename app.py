@@ -434,3 +434,17 @@ if auto_speak and st.session_state.last_spoken:
     )
     # prevent repeat on rerun
     st.session_state.last_spoken = ""
+import streamlit as st
+import numpy as np
+
+st.subheader("Audio Debug")
+
+# 1) Simple beep generator (1 sec 440Hz)
+def make_beep(sr=22050, freq=440, duration=1.0):
+    t = np.linspace(0, duration, int(sr*duration), endpoint=False)
+    wave = (0.2*np.sin(2*np.pi*freq*t)).astype(np.float32)
+    return wave, sr
+
+if st.button("🔊 Play test beep"):
+    wave, sr = make_beep()
+    st.audio(wave, sample_rate=sr)
