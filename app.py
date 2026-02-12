@@ -1,10 +1,10 @@
 # app.py — FortisVoice (WhatsApp-style) Text + Voice (Browser STT/TTS)
 # ✅ Fixes:
-# 1) “Received component message for unregistered ComponentInstance” by using ONE stable component iframe (stable key)
-# 2) Mic click now triggers recognition inside the SAME component via a start counter (no new iframes on click)
-# 3) TTS autoplay is unreliable in browsers (gesture policy), so added a “🔊 Speak” button that works reliably
+# - components.html() me key/return-value wali mistake removed
+# - No postMessage to Streamlit component API (unregistered error removed)
+# - Mic button (STT) runs in iframe and writes transcript into Streamlit text input
+# - Speak button (TTS) runs in iframe on real click so browser usually allows audio
 
-import json
 import re
 from datetime import datetime
 
@@ -29,14 +29,12 @@ URDU_RANGE_RE = re.compile(r"[\u0600-\u06FF]")  # Arabic/Urdu unicode range
 
 
 def detect_language(text: str) -> str:
-    """Return 'ur' if Urdu/Arabic script detected else 'en'."""
     if not text:
         return "en"
     return "ur" if URDU_RANGE_RE.search(text) else "en"
 
 
 def bot_reply(user_text: str) -> str:
-    """Demo reply engine (NO AI model). Language matches user input."""
     lang = detect_language(user_text)
     if lang == "ur":
         return "جی! میں آپ کی مدد کے لیے حاضر ہوں۔\n\nآپ کیا جاننا چاہتے ہیں؟"
@@ -51,7 +49,7 @@ def now_time():
 # Session state
 # ---------------------------
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # list of dicts: {role, content, time}
+    st.session_state.messages = []
 
 if "draft" not in st.session_state:
     st.session_state.draft = ""
@@ -59,44 +57,30 @@ if "draft" not in st.session_state:
 if "last_reply" not in st.session_state:
     st.session_state.last_reply = ""
 
-if "tts_queue" not in st.session_state:
-    st.session_state.tts_queue = ""  # text to speak
-
-if "mic_start_count" not in st.session_state:
-    st.session_state.mic_start_count = 0  # increment to trigger STT in component
-
-if "last_transcript" not in st.session_state:
-    st.session_state.last_transcript = ""
-
 
 # ---------------------------
-# Sidebar controls
+# Sidebar
 # ---------------------------
 st.sidebar.title("Settings")
-
-auto_speak = st.sidebar.toggle("Auto-speak assistant reply (may be blocked by browser)", value=False)
 
 voice_lang = st.sidebar.selectbox(
     "Voice input language",
     options=["en-US", "en-GB", "ur-PK", "hi-IN"],
     index=0,
-    help="This controls browser speech recognition language.",
+    help="Browser speech recognition language.",
 )
 
 if st.sidebar.button("Clear chat", use_container_width=True):
     st.session_state.messages = []
     st.session_state.draft = ""
     st.session_state.last_reply = ""
-    st.session_state.tts_queue = ""
-    st.session_state.last_transcript = ""
-    st.session_state.mic_start_count = 0
     st.rerun()
 
 st.sidebar.caption("Voice uses your browser STT/TTS. No API key required.")
 
 
 # ---------------------------
-# Global CSS (WhatsApp-like)
+# CSS
 # ---------------------------
 st.markdown(
     """
@@ -107,7 +91,7 @@ html, body, [data-testid="stAppViewContainer"] { height: 100%; }
 
 .block-container {
   padding-top: 0.75rem !important;
-  padding-bottom: 6.0rem !important;
+  padding-bottom: 6.5rem !important;
   max-width: 1200px;
 }
 
@@ -134,7 +118,6 @@ html, body, [data-testid="stAppViewContainer"] { height: 100%; }
   white-space: pre-wrap;
   word-wrap: break-word;
   font-size: 0.98rem;
-  position: relative;
 }
 .bubble.user { background: #d9fdd3; border-top-right-radius: 6px; }
 .bubble.bot  { background: #ffffff; border-top-left-radius: 6px; }
@@ -170,10 +153,7 @@ div[data-testid="stTextInput"] input {
 }
 div[data-testid="stTextInput"] { margin-bottom: 0 !important; }
 
-button[kind="primary"], button[kind="secondary"] {
-  border-radius: 999px !important;
-  height: 44px !important;
-}
+button[kind="primary"] { border-radius: 999px !important; height: 44px !important; }
 
 @media (max-width: 768px) {
   .block-container { max-width: 100% !important; }
@@ -213,12 +193,11 @@ chat_html = ['<div class="chat-shell" id="chatShell">']
 for m in st.session_state.messages:
     role = "user" if m["role"] == "user" else "bot"
     bubble_class = "user" if role == "user" else "bot"
-    content = m["content"]
     chat_html.append(
         f"""
 <div class="msg-row {role}">
   <div class="bubble {bubble_class}">
-    {content}
+    {m["content"]}
     <span class="time">{m["time"]}</span>
   </div>
 </div>
@@ -236,110 +215,16 @@ chat_html.append(
 st.markdown("\n".join(chat_html), unsafe_allow_html=True)
 
 # ---------------------------
-# Voice STT component (SINGLE stable iframe)
-# Triggered by mic_start_count changes
-# ---------------------------
-stt_payload = {
-    "lang": voice_lang,
-    "startCount": st.session_state.mic_start_count,
-}
-stt_payload_json = json.dumps(stt_payload)
-
-voice_component_html = f"""
-<div>
-<script>
-(function() {{
-  const payload = {stt_payload_json};
-  const STREAMLIT_EVENT = "streamlit:setComponentValue";
-
-  function sendToStreamlit(value) {{
-    window.parent.postMessage({{
-      isStreamlitMessage: true,
-      type: STREAMLIT_EVENT,
-      value: value
-    }}, "*");
-  }}
-
-  function startRecognition() {{
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {{
-      sendToStreamlit("__STT_ERROR__:Speech recognition not supported (use Chrome).");
-      return;
-    }}
-
-    const recog = new SpeechRecognition();
-    recog.lang = payload.lang || "en-US";
-    recog.interimResults = false;
-    recog.maxAlternatives = 1;
-
-    recog.onresult = (event) => {{
-      try {{
-        const transcript = event.results[0][0].transcript || "";
-        sendToStreamlit(transcript);
-      }} catch (e) {{
-        sendToStreamlit("__STT_ERROR__:Could not read transcript");
-      }}
-    }};
-
-    recog.onerror = (e) => {{
-      sendToStreamlit("__STT_ERROR__:" + (e && e.error ? e.error : "unknown"));
-    }};
-
-    try {{
-      recog.start();
-    }} catch (e) {{
-      // Sometimes start() throws if called too quickly
-      sendToStreamlit("__STT_ERROR__:start_failed");
-    }}
-  }}
-
-  // Use localStorage to remember last startCount for this browser tab.
-  const key = "fv_lastStartCount";
-  const last = Number(localStorage.getItem(key) || "0");
-  if (payload.startCount > last) {{
-    localStorage.setItem(key, String(payload.startCount));
-    startRecognition();
-  }}
-}})();
-</script>
-</div>
-"""
-
-# IMPORTANT: stable key => prevents “unregistered ComponentInstance”
-voice_value = components.html(voice_component_html, height=0, key="fv_stt_component")
-
-# If voice returned text, process it
-if isinstance(voice_value, str) and voice_value.strip():
-    txt = voice_value.strip()
-    if txt.startswith("__STT_ERROR__"):
-        # show error to user (non-fatal)
-        st.toast(f"Voice error: {txt.replace('__STT_ERROR__:', '')}", icon="⚠️")
-    else:
-        st.session_state.last_transcript = txt
-        st.session_state.draft = txt  # put in input box
-    # clear component value loop by rerun
-    st.rerun()
-
-
-# ---------------------------
 # Send logic
 # ---------------------------
 def send_message(text: str):
     text = (text or "").strip()
     if not text:
         return
-
     st.session_state.messages.append({"role": "user", "content": text, "time": now_time()})
-
     reply = bot_reply(text)
     st.session_state.messages.append({"role": "assistant", "content": reply, "time": now_time()})
-
     st.session_state.last_reply = reply
-
-    # optional auto-speak (may be blocked). We'll queue it.
-    if auto_speak:
-        st.session_state.tts_queue = reply
-
     st.session_state.draft = ""
 
 
@@ -348,68 +233,148 @@ def send_message(text: str):
 # ---------------------------
 st.markdown('<div class="composer"><div class="composer-inner">', unsafe_allow_html=True)
 
-c1, c2, c3, c4 = st.columns([7, 1, 1, 1])
+c1, c2, c3 = st.columns([8, 1, 1])
 
 with c1:
+    # IMPORTANT: label stays "Message" so JS can find it via aria-label
     st.session_state.draft = st.text_input(
         "Message",
         value=st.session_state.draft,
         label_visibility="collapsed",
         placeholder="Type a message…",
-        key="fv_text_input",
+        key="fv_message_input",
     )
 
 with c2:
-    if st.button("🎤", help="Voice input (STT)", use_container_width=True):
-        # Increment counter => component will start recognition
-        st.session_state.mic_start_count += 1
-        st.rerun()
+    # This area will be replaced by HTML buttons (Mic + Speak) inside a component
+    # We keep it empty so layout stays clean.
+    st.write("")
 
 with c3:
     if st.button("➤", type="primary", help="Send", use_container_width=True):
         send_message(st.session_state.draft)
         st.rerun()
 
-with c4:
-    # Reliable TTS: user gesture button (browser allows speechSynthesis)
-    if st.button("🔊", help="Speak last assistant reply", use_container_width=True):
-        if st.session_state.last_reply:
-            st.session_state.tts_queue = st.session_state.last_reply
-        st.rerun()
-
 st.markdown("</div></div>", unsafe_allow_html=True)
 
-
 # ---------------------------
-# TTS (Browser speechSynthesis)
-# NOTE: Autoplay may be blocked; the 🔊 button works best.
+# Voice Controls (HTML buttons with real user clicks)
+# - STT writes transcript into Streamlit input (parent DOM)
+# - TTS speaks last reply
 # ---------------------------
-if st.session_state.tts_queue:
-    tts_text = st.session_state.tts_queue
-    # Safe JS string via JSON
-    tts_text_js = json.dumps(tts_text)
+last_reply_safe = (st.session_state.last_reply or "").replace("\\", "\\\\").replace("`", "\\`")
 
-    components.html(
-        f"""
+voice_ui = f"""
+<div style="position:fixed; left:0; right:0; bottom:58px; z-index:1000; display:flex; justify-content:center; pointer-events:none;">
+  <div style="max-width:1200px; width:100%; padding:0 1rem; display:flex; gap:10px; justify-content:flex-end; pointer-events:auto;">
+    <button id="fvMic"
+      style="border:none; border-radius:999px; height:44px; width:44px; cursor:pointer; background:#ffffff; box-shadow:0 6px 18px rgba(0,0,0,0.10);">
+      🎤
+    </button>
+    <button id="fvSpeak"
+      style="border:none; border-radius:999px; height:44px; width:44px; cursor:pointer; background:#ffffff; box-shadow:0 6px 18px rgba(0,0,0,0.10);">
+      🔊
+    </button>
+  </div>
+</div>
+
 <script>
 (function() {{
-  try {{
-    const text = {tts_text_js};
-    const msg = new SpeechSynthesisUtterance(text);
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(msg);
-  }} catch (e) {{
-    console.log("TTS error", e);
+  const VOICE_LANG = "{voice_lang}";
+  const LAST_REPLY = `{last_reply_safe}`;
+
+  function findStreamlitInput() {{
+    // Streamlit text_input ends up as an <input> with aria-label equal to label
+    // Even if label is collapsed, aria-label is usually kept.
+    const doc = window.parent.document;
+    let el = doc.querySelector('input[aria-label="Message"]');
+    if (!el) {{
+      // fallback: any visible text input
+      el = doc.querySelector('div[data-testid="stTextInput"] input');
+    }}
+    return el;
   }}
+
+  function setInputValue(val) {{
+    const input = findStreamlitInput();
+    if (!input) {{
+      alert("Input box not found. Please refresh the page.");
+      return;
+    }}
+    input.focus();
+    input.value = val;
+
+    // React/Streamlit needs events
+    const ev1 = new Event('input', {{ bubbles: true }});
+    const ev2 = new Event('change', {{ bubbles: true }});
+    input.dispatchEvent(ev1);
+    input.dispatchEvent(ev2);
+  }}
+
+  function startSTT() {{
+    const SpeechRecognition = window.parent.SpeechRecognition || window.parent.webkitSpeechRecognition
+      || window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {{
+      alert("Speech Recognition not supported. Use Chrome on Desktop.");
+      return;
+    }}
+
+    const recog = new SpeechRecognition();
+    recog.lang = VOICE_LANG;
+    recog.interimResults = false;
+    recog.maxAlternatives = 1;
+
+    recog.onresult = (event) => {{
+      try {{
+        const transcript = event.results[0][0].transcript || "";
+        setInputValue(transcript);
+      }} catch (e) {{
+        console.log(e);
+      }}
+    }};
+    recog.onerror = (e) => {{
+      console.log("STT error:", e);
+      alert("Voice error: " + (e && e.error ? e.error : "unknown"));
+    }};
+
+    try {{
+      recog.start();
+    }} catch (e) {{
+      console.log(e);
+      alert("Could not start mic. Try again.");
+    }}
+  }}
+
+  function speakTTS() {{
+    const synth = window.parent.speechSynthesis || window.speechSynthesis;
+    if (!synth) {{
+      alert("TTS not supported in this browser.");
+      return;
+    }}
+    if (!LAST_REPLY || LAST_REPLY.trim().length === 0) {{
+      alert("No assistant reply yet.");
+      return;
+    }}
+    try {{
+      const msg = new SpeechSynthesisUtterance(LAST_REPLY);
+      synth.cancel();
+      synth.speak(msg);
+    }} catch (e) {{
+      console.log("TTS error", e);
+    }}
+  }}
+
+  const micBtn = document.getElementById("fvMic");
+  const spkBtn = document.getElementById("fvSpeak");
+  if (micBtn) micBtn.onclick = startSTT;
+  if (spkBtn) spkBtn.onclick = speakTTS;
 }})();
 </script>
-""",
-        height=0,
-        key=f"fv_tts_{hash(tts_text)}",
-    )
-    # prevent repeat on rerun
-    st.session_state.tts_queue = ""
+"""
 
+# Render once; no key argument (Streamlit doesn't allow key here)
+components.html(voice_ui, height=0)
 
 # ---------------------------
 # Audio Debug
@@ -421,9 +386,6 @@ def make_beep(sr=22050, freq=440, duration=1.0):
     wave = (0.2 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
     return wave, sr
 
-if st.button("🔊 Play test beep", key="fv_beep_btn"):
+if st.button("🔊 Play test beep"):
     wave, sr = make_beep()
     st.audio(wave, sample_rate=sr)
-
-if st.session_state.last_transcript:
-    st.caption(f"Last transcript: {st.session_state.last_transcript}")
