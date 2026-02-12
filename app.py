@@ -9,20 +9,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---------------- Styling (Fix spacing + better chat area) ----------------
+# ---------------- Styling (WhatsApp-ish input bar + proper space) ----------------
 st.markdown(
     """
 <style>
-/* Wider app + better padding */
-.block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
-
-/* Make the main column wider and give chat a clean card */
-.chat-wrap{
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.03);
-  border-radius: 18px;
-  padding: 14px 14px;
-}
+/* Give room at bottom for fixed input bar */
+.block-container { padding-top: 1.1rem; padding-bottom: 6.5rem; }
 
 /* Header */
 .header-card{
@@ -35,42 +27,92 @@ st.markdown(
 .header-title{ font-size: 1.45rem; font-weight: 800; margin: 0; }
 .header-sub{ margin: 6px 0 0 0; opacity: 0.85; }
 
-/* Chat messages */
-.stChatMessage { border-radius: 16px; }
 .small-muted { opacity: 0.75; font-size: 0.92rem; }
 
-/* Buttons */
-div.stButton > button, div.stDownloadButton > button {
-  border-radius: 12px !important;
-  padding: 0.55rem 0.9rem !important;
+/* Chat wrapper */
+.chat-wrap{
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.03);
+  border-radius: 18px;
+  padding: 14px 14px;
+  min-height: 60vh;
 }
 
-/* Speak section spacing */
-.speak-card{
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.02);
-  border-radius: 18px;
-  padding: 12px 14px;
+/* Fixed WhatsApp-like composer bar */
+.composer{
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 12px 14px 12px;
+  background: rgba(18,18,18,0.85);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(255,255,255,0.10);
+  z-index: 9999;
 }
+.composer-inner{
+  max-width: 1250px;
+  margin: 0 auto;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.composer-input{
+  flex: 1;
+  display: flex;
+  align-items: center;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  padding: 10px 12px;
+}
+.composer-input input{
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: white;
+  font-size: 15px;
+}
+.icon-btn{
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.08);
+  cursor: pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size: 18px;
+}
+.icon-btn:disabled{
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Make Streamlit chat messages look nice */
+.stChatMessage { border-radius: 16px; }
+
+/* Hide Streamlit default footer/menu (optional) */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# ---------------- Language detection (simple + practical) ----------------
-URDU_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")  # Arabic/Urdu script
+# ---------------- Language detection (English vs Urdu/Roman-Urdu) ----------------
+URDU_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
 
 def detect_lang(text: str) -> str:
-    """
-    Returns: 'ur' if Urdu/Arabic script found OR roman-urdu keywords dominate; else 'en'
-    """
     t = (text or "").strip()
     if not t:
         return "en"
     if URDU_ARABIC_RE.search(t):
         return "ur"
     tl = t.lower()
-    roman_urdu_markers = ["bhai", "mujhe", "kya", "hain", "hai", "nahi", "kar", "kr", "chahiye", "banao", "ban", "please", "aoa", "salam"]
+    roman_urdu_markers = ["bhai", "mujhe", "kya", "hain", "hai", "nahi", "kar", "kr", "chahiye", "banao", "ban", "aoa", "salam"]
     score = sum(1 for w in roman_urdu_markers if w in tl)
     return "ur" if score >= 2 else "en"
 
@@ -83,40 +125,27 @@ def bot_reply(text: str) -> str:
     if not t:
         return "Mujhe aapki awaz clear nahi mili. Dobara bol dein." if lang == "ur" else "I didn’t catch that clearly. Please say it again."
 
-    # Greetings
     if any(x in tl for x in ["assalam", "asalam", "salam", "aoa", "hello", "hi", "hey"]):
         return "Wa alaikum assalam! Batao bhai, kis cheez mein help chahiye?" if lang == "ur" else "Hi! How can I help you today?"
 
-    # Streamlit / deploy
     if "streamlit" in tl and any(x in tl for x in ["deploy", "deployment", "host", "publish"]):
         return (
             "Streamlit deploy ke liye: app.py aur requirements.txt GitHub repo mein push karo, phir Streamlit Community Cloud se deploy kar do."
             if lang == "ur"
             else
-            "To deploy on Streamlit: push app.py and requirements.txt to a GitHub repo, then deploy it on Streamlit Community Cloud."
+            "To deploy on Streamlit: push app.py and requirements.txt to GitHub, then deploy on Streamlit Community Cloud."
         )
 
-    # Colab networking
-    if any(x in tl for x in ["colab", "google colab"]):
-        return (
-            "Colab mein Streamlit direct IP se open nahi hota. Tunnel (Cloudflare/localtunnel) use karo, ya best: GitHub + Streamlit Cloud."
-            if lang == "ur"
-            else
-            "In Colab, you can’t open Streamlit via direct IP. Use a tunnel (Cloudflare/localtunnel) or the best option: GitHub + Streamlit Cloud."
-        )
-
-    # Voice without API key
     if any(x in tl for x in ["without api", "no api", "without key", "no key", "without model", "no model", "api key"]):
         return (
             "Voice input/output bina API key ke possible hai (browser Web Speech API). Lekin real AI chat ke liye model/API chahiye hota hai. Rule-based bot chal sakta hai."
             if lang == "ur"
             else
-            "You can do voice input/output without an API key using the browser’s Web Speech API. But real AI chat needs a model/API. A rule-based bot can work without it."
+            "Voice input/output can work without an API key using the browser Web Speech API. But real AI chat needs a model/API. A rule-based bot works without it."
         )
 
-    # Default fallback
     return (
-        f"Main ne suna: “{t}”. Ab batao—tumhein short answer chahiye ya detailed steps?"
+        f"Main ne suna: “{t}”. Ab batao—short answer chahiye ya detailed steps?"
         if lang == "ur"
         else
         f"I heard: “{t}”. Do you want a quick answer or detailed steps?"
@@ -129,6 +158,9 @@ if "last_incoming" not in st.session_state:
     st.session_state.last_incoming = ""
 if "auto_speak" not in st.session_state:
     st.session_state.auto_speak = True
+
+def add_message(role: str, content: str):
+    st.session_state.messages.append({"role": role, "content": content})
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -150,111 +182,20 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.caption("✅ No API Key • ✅ No AI Model • ✅ Browser STT/TTS")
+    st.caption("✅ No API Key • ✅ No AI Model • ✅ WhatsApp-style Composer")
 
 # ---------------- Header ----------------
 st.markdown(
     """
 <div class="header-card">
   <p class="header-title">🎙️ FortisVoice</p>
-  <p class="header-sub">Professional chat layout + bilingual replies (English ↔ Urdu). Voice via Web Speech API.</p>
+  <p class="header-sub">WhatsApp-style input: text send + voice send together. English → English, Urdu/Roman-Urdu → Urdu.</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-# ---------------- Layout: Chat (left) + Speak (right) ----------------
-left, right = st.columns([2.2, 1.0], gap="large")
-
-# ---------- Mic component (top of chat) ----------
-mic_component = f"""
-<div style="display:flex; gap:10px; align-items:center; margin: 2px 0 10px 0;">
-  <button id="startBtn" style="padding:10px 14px; border-radius:12px; border:1px solid rgba(0,0,0,0.15); cursor:pointer;">
-    🎤 Start
-  </button>
-  <button id="stopBtn" style="padding:10px 14px; border-radius:12px; border:1px solid rgba(0,0,0,0.15); cursor:pointer;" disabled>
-    ⏹ Stop
-  </button>
-  <span id="status" style="font-family: system-ui; opacity:0.75;"></span>
-</div>
-
-<script>
-(function(){{
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const statusEl = document.getElementById("status");
-  const startBtn = document.getElementById("startBtn");
-  const stopBtn  = document.getElementById("stopBtn");
-
-  if (!SpeechRecognition) {{
-    statusEl.textContent = "❌ SpeechRecognition not supported. Use Chrome.";
-    startBtn.disabled = true;
-    return;
-  }}
-
-  let recog = new SpeechRecognition();
-  recog.lang = "{recog_lang}";
-  recog.interimResults = true;
-  recog.continuous = false;
-
-  let finalText = "";
-  let lastInterim = "";
-
-  function setUI(listening) {{
-    startBtn.disabled = listening;
-    stopBtn.disabled = !listening;
-  }}
-
-  recog.onstart = () => {{
-    finalText = "";
-    lastInterim = "";
-    statusEl.textContent = "Listening...";
-    setUI(true);
-  }};
-
-  recog.onresult = (event) => {{
-    let interim = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {{
-      const chunk = event.results[i][0].transcript;
-      if (event.results[i].isFinal) finalText += chunk;
-      else interim += chunk;
-    }}
-    if (interim && interim !== lastInterim) {{
-      lastInterim = interim;
-      statusEl.textContent = "…" + interim;
-    }}
-  }};
-
-  recog.onerror = (e) => {{
-    statusEl.textContent = "❌ Error: " + e.error;
-    setUI(false);
-  }};
-
-  recog.onend = () => {{
-    setUI(false);
-    const text = (finalText || "").trim();
-    if (text.length > 0) {{
-      const base = window.location.origin + window.location.pathname;
-      const t = encodeURIComponent(text);
-      window.location.href = base + "?t=" + t + "&_ts=" + Date.now();
-    }} else {{
-      statusEl.textContent = "Stopped.";
-    }}
-  }};
-
-  startBtn.onclick = () => {{
-    try {{ recog.start(); }} catch (e) {{ statusEl.textContent = "❌ Could not start mic."; }}
-  }};
-  stopBtn.onclick = () => {{
-    try {{ recog.stop(); }} catch (e) {{}}
-  }};
-}})();
-</script>
-"""
-
-def add_message(role: str, content: str):
-    st.session_state.messages.append({"role": role, "content": content})
-
-# Read transcript from query params
+# ---------------- Read incoming message from query params ----------------
 qp = st.query_params
 incoming = qp.get("t", "")
 
@@ -263,34 +204,26 @@ if incoming and incoming != st.session_state.last_incoming:
     add_message("user", incoming)
     add_message("assistant", bot_reply(incoming))
 
+# ---------------- Main Layout ----------------
+left, right = st.columns([2.2, 1.0], gap="large")
+
 with left:
     st.markdown("### 💬 Chat")
-    st.components.v1.html(mic_component, height=85)
-
     st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
+
     if not st.session_state.messages:
-        st.markdown(
-            '<div class="small-muted">Tip: 🎤 Start dabao aur bol kar message bhejo. Ya neeche type karo.</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="small-muted">Neeche input bar mein type karo ya 🎤 dabao (WhatsApp style).</div>', unsafe_allow_html=True)
 
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.write(m["content"])
+
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Text input (fallback)
-    user_text = st.chat_input("Type a message (fallback)...")
-    if user_text:
-        add_message("user", user_text)
-        add_message("assistant", bot_reply(user_text))
-        st.rerun()
-
-# Speak card
 with right:
     st.markdown("### 🔊 Speak")
-    st.markdown('<div class="speak-card">', unsafe_allow_html=True)
-    st.markdown('<div class="small-muted">Browser TTS (SpeechSynthesis). Works best on Chrome.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="small-muted">Browser TTS (SpeechSynthesis). Chrome best.</div>', unsafe_allow_html=True)
 
     last_assistant = ""
     for m in reversed(st.session_state.messages):
@@ -299,7 +232,7 @@ with right:
             break
 
     speak_btn = f"""
-<button style="margin-top:10px; padding:10px 14px; border-radius:12px; border:1px solid rgba(0,0,0,0.15); cursor:pointer; width:100%;"
+<button class="icon-btn" style="width:100%; border-radius:14px; height:44px;"
 onclick="
   const txt = {last_assistant!r};
   if (!txt) return;
@@ -311,16 +244,139 @@ onclick="
 🔊 Speak last reply
 </button>
 """
-    st.components.v1.html(speak_btn, height=80)
-
-    st.markdown("---")
-    st.markdown(
-        '<div class="small-muted">Language auto-detect: English question → English reply. Urdu/Roman-Urdu → Urdu reply.</div>',
-        unsafe_allow_html=True,
-    )
+    st.components.v1.html(speak_btn, height=60)
+    st.markdown('<div class="small-muted" style="margin-top:10px;">Tip: Voice reply auto-speak sidebar se on/off kar lo.</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Auto-speak on new assistant reply (best effort)
+# ---------------- WhatsApp-style Composer (Text + Send + Mic) ----------------
+# JS behavior:
+# - Text send: redirect to ?t=<text>
+# - Voice: SpeechRecognition -> on final redirect to ?t=<transcript>
+# - Shows small status text
+# - Press Enter to send
+composer = f"""
+<div class="composer">
+  <div class="composer-inner">
+    <div class="composer-input">
+      <input id="msgInput" type="text" placeholder="Type a message..." autocomplete="off" />
+    </div>
+
+    <button id="sendBtn" class="icon-btn" title="Send">➤</button>
+    <button id="micBtn" class="icon-btn" title="Voice">🎤</button>
+    <button id="stopBtn" class="icon-btn" title="Stop" disabled>⏹</button>
+
+    <span id="status" class="small-muted" style="min-width:180px; margin-left:6px;"></span>
+  </div>
+</div>
+
+<script>
+(function(){{
+  const base = window.location.origin + window.location.pathname;
+  const msgInput = document.getElementById("msgInput");
+  const sendBtn = document.getElementById("sendBtn");
+  const micBtn  = document.getElementById("micBtn");
+  const stopBtn = document.getElementById("stopBtn");
+  const status  = document.getElementById("status");
+
+  // Keep typed text across reruns (optional)
+  try {{
+    const saved = sessionStorage.getItem("fv_draft") || "";
+    if (saved && !msgInput.value) msgInput.value = saved;
+  }} catch(e){{}}
+
+  function redirectWithText(text) {{
+    const t = (text || "").trim();
+    if (!t) return;
+    try {{ sessionStorage.setItem("fv_draft", ""); }} catch(e){{}}
+    const qp = "?t=" + encodeURIComponent(t) + "&_ts=" + Date.now();
+    window.location.href = base + qp;
+  }}
+
+  function setDraft() {{
+    try {{ sessionStorage.setItem("fv_draft", msgInput.value || ""); }} catch(e){{}}
+  }}
+
+  msgInput.addEventListener("input", setDraft);
+
+  // Send on click
+  sendBtn.onclick = () => {{
+    redirectWithText(msgInput.value);
+  }};
+
+  // Send on Enter
+  msgInput.addEventListener("keydown", (e) => {{
+    if (e.key === "Enter") {{
+      e.preventDefault();
+      redirectWithText(msgInput.value);
+    }}
+  }});
+
+  // Voice recognition
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {{
+    status.textContent = "Voice not supported (use Chrome).";
+    micBtn.disabled = true;
+    return;
+  }}
+
+  const recog = new SpeechRecognition();
+  recog.lang = "{recog_lang}";
+  recog.interimResults = true;
+  recog.continuous = false;
+
+  let finalText = "";
+
+  function setListening(on) {{
+    micBtn.disabled = on;
+    stopBtn.disabled = !on;
+    sendBtn.disabled = on;
+    msgInput.disabled = on;
+  }}
+
+  recog.onstart = () => {{
+    finalText = "";
+    status.textContent = "Listening...";
+    setListening(true);
+  }};
+
+  recog.onresult = (event) => {{
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {{
+      const chunk = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += chunk;
+      else interim += chunk;
+    }}
+    status.textContent = interim ? ("…" + interim) : "Listening...";
+  }};
+
+  recog.onerror = (e) => {{
+    status.textContent = "Error: " + e.error;
+    setListening(false);
+  }};
+
+  recog.onend = () => {{
+    setListening(false);
+    const t = (finalText || "").trim();
+    status.textContent = t ? "Sending voice..." : "Stopped.";
+    if (t) redirectWithText(t);
+  }};
+
+  micBtn.onclick = () => {{
+    status.textContent = "";
+    try {{ recog.start(); }} catch(e) {{ status.textContent = "Could not start mic."; }}
+  }};
+
+  stopBtn.onclick = () => {{
+    try {{ recog.stop(); }} catch(e) {{}}
+  }};
+
+}})();
+</script>
+"""
+
+st.components.v1.html(composer, height=0)
+
+# ---------------- Auto-speak new assistant reply (best effort) ----------------
 if st.session_state.auto_speak and incoming:
     last_assistant = ""
     for m in reversed(st.session_state.messages):
@@ -338,7 +394,7 @@ setTimeout(() => {{
   msg.rate = 1.0; msg.pitch = 1.0;
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(msg);
-}}, 450);
+}}, 400);
 </script>
 """,
             height=0,
